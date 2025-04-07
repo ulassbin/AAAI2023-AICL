@@ -28,10 +28,10 @@ def evaluate(gtfile, predfile, propfile=None, max_avg_nr_proposals=100,
 
     mean_ap: float = 0.0
     class_ap = []
-    mean_ap, class_ap = anet_eval.evaluate_detection()
+    mean_ap, class_ap_dict = anet_eval.evaluate_detection()
 
     end = time.time()
-    return mean_ap, class_ap
+    return mean_ap, class_ap_dict
 
 
 def evaluate1(gtfile, predfile, propfile=None, max_avg_nr_proposals=100,

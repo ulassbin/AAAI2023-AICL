@@ -307,8 +307,9 @@ class ANETEval(object):
             print('[RESULTS] Performance on ActivityNet detection task.')
             print('\tAverage-mAP: {}'.format(self.average_mAP))
             print('\tAP values:', self.mAP)
-
-        return self.average_mAP, self.mAP
+        # Form a dictionary with tiOu thresholds and AP values.
+        ap_dict = dict(zip(self.tiou_thresholds, self.mAP))
+        return self.average_mAP, ap_dict
 
     def evaluate_proposal(self):
         recall, avg_recall, proposals_per_video = average_recall_vs_avg_nr_proposals(
@@ -438,8 +439,8 @@ def compute_average_precision_detection(ground_truth, prediction, tiou_threshold
             if fp[tidx, idx] == 0 and tp[tidx, idx] == 0:
                 fp[tidx, idx] = 1
 
-    tp_cumsum = np.cumsum(tp, axis=1).astype(np.float)
-    fp_cumsum = np.cumsum(fp, axis=1).astype(np.float)
+    tp_cumsum = np.cumsum(tp, axis=1).astype(float)
+    fp_cumsum = np.cumsum(fp, axis=1).astype(float)
     recall_cumsum = tp_cumsum / npos
 
     precision_cumsum = tp_cumsum / (tp_cumsum + fp_cumsum)

@@ -128,6 +128,7 @@ class ThumosTrainer():
         # network
         self.net = AICL(config)
         self.net = self.net.cuda()
+        self.writter = SummaryWriter(config.log_path)
 
         # data
         self.train_loader, self.test_loader = get_dataloaders(self.config)
@@ -149,9 +150,13 @@ class ThumosTrainer():
         with torch.no_grad():
             model_filename = "CAS_Only.pkl"
             self.config.model_file = os.path.join(self.config.model_path, model_filename)
-            _mean_ap, test_acc = inference(self.net, self.config, self.test_loader, model_file=self.config.model_file)
+            _mean_ap, test_acc, mAp_dict = inference(self.net, self.config, self.test_loader, model_file=self.config.model_file)
             print("cls_acc={:.5f} map={:.5f}".format(test_acc*100, _mean_ap*100))
-
+            if self.writter:
+                self.writter.add_scalar('Test Performance/Accuracy', test_acc, self.step)
+                self.writter.add_scalar('Test Performance/mAP@AVG', _mean_ap, self.step)
+                for key, value in mAp_dict.items():
+                  self.writter.add_scalar('mAp@tIOU/mAP@{:.1f}'.format(key), value, self.step)
 
     def calculate_pesudo_target(self, batch_size, label, topk_indices):
         cls_agnostic_gt = []
@@ -180,7 +185,14 @@ class ThumosTrainer():
         action_consistent_loss = 0.5 * F.mse_loss(actionness1, actionness2) + 0.5 * F.mse_loss(actionness2, actionness1)
 
         cost = base_loss + class_agnostic_loss  + 5*modality_consistent_loss + 0.01*loss_contrastive + 0.1*action_consistent_loss
-
+        
+        if self.writter:
+            self.writter.add_scalar('Loss/Action', base_loss.cpu().item(), self.step)
+            self.writter.add_scalar('Loss/Class_Agnostic_Loss', class_agnostic_loss.cpu().item(), self.step)
+            self.writter.add_scalar('Loss/Modality_Consistent_Loss', modality_consistent_loss.cpu().item(), self.step)
+            self.writter.add_scalar('Loss/Action_Consistent_Loss', action_consistent_loss.cpu().item(), self.step)
+            self.writter.add_scalar('Loss/Contrastive_Loss', loss_contrastive.cpu().item(), self.step)
+            self.writter.add_scalar('Loss/Total', cost.cpu().item(), self.step)
         return cost
 
     def evaluate(self, epoch=0):
@@ -189,12 +201,19 @@ class ThumosTrainer():
 
             with torch.no_grad():
                 self.net = self.net.eval()
-                mean_ap, test_acc = inference(self.net, self.config, self.test_loader, model_file=None)
+                mean_ap, test_acc, mAp_dict = inference(self.net, self.config, self.test_loader, model_file=None)
                 self.net = self.net.train()
 
             if mean_ap > self.best_mAP:
                 self.best_mAP = mean_ap
                 torch.save(self.net.state_dict(), os.path.join(self.config.model_path, "CAS_Only.pkl"))
+
+            if self.writter:
+                self.writter.add_scalar('Test Performance/Accuracy', test_acc, self.step)
+                self.writter.add_scalar('Test Performance/mAP@AVG', mean_ap, self.step)
+                for key, value in mAp_dict.items():
+                  self.writter.add_scalar('mAp@tIOU/mAP@{:.1f}'.format(key), value, self.step)
+
 
             print("epoch={:5d}  step={:5d}  Loss={:.4f}  cls_acc={:5.2f}  best_map={:5.2f}".format(
                     epoch, self.step, self.total_loss_per_epoch, test_acc * 100, self.best_mAP * 100))

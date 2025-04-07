@@ -55,7 +55,6 @@ def init_args(args):
         os.makedirs(args.model_path)
 
     args.model_path = os.path.join(args.output_dir, args.exp_name)
-
     return args
 
 
@@ -94,6 +93,7 @@ class Config(object):
         self.nms_thresh = args.nms_thresh
         self.load_weight = args.load_weight
         self.verbose = args.verbose
+        self.log_path = os.path.join(os.path.join(args.output_dir, args.exp_name), 'log')
 
 
 class_dict = {

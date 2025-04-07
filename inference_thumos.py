@@ -66,7 +66,7 @@ def inference(net, config, test_loader, model_file=None):
 
             correct_pred = np.sum(label_np == score_np, axis=1)
 
-            num_correct += np.sum((correct_pred == config.num_classes).astype(np.float32))
+            num_correct += np.sum((correct_pred == config.num_classes).astype(float))
             num_total += correct_pred.shape[0]
 
             pred = np.where(score_np > config.class_thresh)[0]
@@ -119,7 +119,6 @@ def inference(net, config, test_loader, model_file=None):
         with open(json_path, 'w') as f:
             json.dump(final_res, f)
             f.close()
-
-        mean_ap, _ = evaluate(config.gt_path, json_path, None, tiou_thresholds=np.linspace(0.1, 0.7, 7), plot=False,
+        mean_ap, class_ap_dict = evaluate(config.gt_path, json_path, None, tiou_thresholds=np.linspace(0.1, 0.7, 7), plot=False,
                                      subset='test', verbose=config.verbose)
-        return mean_ap, test_acc
+        return mean_ap, test_acc, class_ap_dict
