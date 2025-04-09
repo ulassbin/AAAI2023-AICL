@@ -94,6 +94,22 @@ class Config(object):
         self.load_weight = args.load_weight
         self.verbose = args.verbose
         self.log_path = os.path.join(os.path.join(args.output_dir, args.exp_name), 'log')
+        # Memory Module parameters
+        self.queue_size = 10000
+        self.sampling_rate = 0.2
+        self.proj_dim = 128
+        self.classify_with_projection = False
+        # Memory module weights
+        self.nce_weight = 0.1
+        self.pseudo_weight = 10.0
+        # Latent Representation parameters
+        self.latent_loss_weight = 10.0
+        self.pretrain_encoder_decoder = True
+        self.pretrain_batch_size = 32 # 100 originally
+        self.pretrain_num_iters = 1000
+        self.latent_loss_pre = 100 # 1000 originially
+
+
 
 
 class_dict = {

@@ -15,9 +15,12 @@ from inference_thumos import inference
 from utils import misc_utils
 from torch.utils.data import Dataset
 from dataset.thumos_features import ThumosFeature
-from utils.loss import CrossEntropyLoss, GeneralizedCE
+from utils.loss import CrossEntropyLoss, GeneralizedCE, LatentLoss
 from config.config_thumos import Config, parse_args, class_dict
 from models.model import AICL
+
+from NCELoss.NNIICLUV_Tests.custom_queue import Queue
+
 
 np.set_printoptions(formatter={'float_kind': "{:.2f}".format})
 
@@ -56,7 +59,16 @@ def get_dataloaders(config):
         batch_size=1,
         shuffle=False, num_workers=config.num_workers)
 
-    return train_loader, test_loader
+    pre_train_loader = data.DataLoader(
+        ThumosFeature(data_path=config.data_path, mode='train',
+                      modal=config.modal, feature_fps=config.feature_fps,
+                      num_segments=config.num_segments, len_feature=config.len_feature,
+                      seed=config.seed, sampling='random', supervision='strong'),
+        batch_size=config.pretrain_batch_size,
+        shuffle=True, num_workers=config.num_workers)
+
+
+    return train_loader, test_loader, pre_train_loader
 
 
 def set_seed(config):
@@ -124,25 +136,44 @@ class ThumosTrainer():
     def __init__(self, config):
         # config
         self.config = config
-
+        
         # network
         self.net = AICL(config)
         self.net = self.net.cuda()
         self.writter = SummaryWriter(config.log_path)
 
         # data
-        self.train_loader, self.test_loader = get_dataloaders(self.config)
+        self.train_loader, self.test_loader, self.pre_train_loader = get_dataloaders(self.config)
 
         # loss, optimizer
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=self.config.lr, betas=(0.9, 0.999), weight_decay=0.0005)
         self.criterion = CrossEntropyLoss()
         self.Lgce = GeneralizedCE(q=self.config.q_val)
 
+        # Memory module
+        self.queue = Queue(queue_size=config.queue_size, embedding_dim=config.proj_dim, device='cuda')
+        self.nn_queue = Queue(queue_size=config.queue_size, embedding_dim=config.proj_dim, device='cuda')
+        self.initialized = False
+
         # parameters
         self.best_mAP = -1 # init
         self.step = 0
         self.total_loss_per_epoch = 0
+        
+    def initialize(self, embeddings):
+        print('Initializing with ', embeddings.shape)
+        self.queue.enqueue(embeddings)
+        self.initialized = True
+        return
 
+
+    def sample_embeddings(self, embeddings):
+        batch_size, t, feature_dim = embeddings.shape  # Assuming fixed t
+        new_size = int(self.cfg.SAMPLING_RATE * t)
+        sample_indexes = torch.randint(0, t, (batch_size, new_size), device=embeddings.device)
+        # Use advanced indexing to preserve gradients
+        sampled = embeddings[torch.arange(batch_size).unsqueeze(1), sample_indexes]
+        return sampled  # Keeps gradients
 
     def test(self):
         self.net.eval()
@@ -186,13 +217,17 @@ class ThumosTrainer():
 
         cost = base_loss + class_agnostic_loss  + 5*modality_consistent_loss + 0.01*loss_contrastive + 0.1*action_consistent_loss
         
+        # Module additional loss terms
+        # cost += self.latent_weight * (loss_latent_inter + loss_latent_intra) # encoding-decoding loss
+        # cost += self.nce_weight * loss_nce # snippetwise memory refinement loss
+        # cost += self.pseudo_weight * loss_pseudo # videowise memory refinement loss
         if self.writter:
             self.writter.add_scalar('Loss/Action', base_loss.cpu().item(), self.step)
             self.writter.add_scalar('Loss/Class_Agnostic_Loss', class_agnostic_loss.cpu().item(), self.step)
             self.writter.add_scalar('Loss/Modality_Consistent_Loss', modality_consistent_loss.cpu().item(), self.step)
             self.writter.add_scalar('Loss/Action_Consistent_Loss', action_consistent_loss.cpu().item(), self.step)
             self.writter.add_scalar('Loss/Contrastive_Loss', loss_contrastive.cpu().item(), self.step)
-            self.writter.add_scalar('Loss/Total', cost.cpu().item(), self.step)
+            self.writter.add_scalar('Loss/Total_Base', cost.cpu().item(), self.step)
         return cost
 
     def evaluate(self, epoch=0):
@@ -220,21 +255,102 @@ class ThumosTrainer():
 
             self.total_loss_per_epoch = 0
 
+    def get_topk(self, cas):
+        _, topk_indices = torch.topk(cas, self.config.num_segments // 8, dim=1)
+        # _, topk_indices1 = torch.topk(combined_cas, r, dim=1)
+        cas_top = torch.mean(torch.gather(cas, 1, topk_indices), dim=1)
+
+        return cas_top, topk_indices
 
     def forward_pass(self, _data):
-        cas, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2 = self.net(_data)
+        (cas, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, 
+         actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings ) = self.net(_data)
 
         combined_cas = misc_utils.instance_selection_function(torch.softmax(cas.detach(), -1),
                                                               action_flow.permute(0, 2, 1).detach(),
                                                               action_rgb.permute(0, 2, 1))
 
+        cas_top, topk_indices = self.get_topk(combined_cas)
+        return cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings
+    
+    def forward_pass_from_embeddings(self, latent_embeddings):
+        cas, action_flow, action_rgb, actionness1, actionness2, embedding, embedding_flow, embedding_rgb = self.net.forward_with_embeddings(latent_embeddings)
+        combined_cas = misc_utils.instance_selection_function(torch.softmax(cas.detach(), -1),
+                                                              action_flow.permute(0, 2, 1).detach(),
+                                                              action_rgb.permute(0, 2, 1))
+        cas_top, topk_indices = self.get_topk(combined_cas)
+        return cas_top
+        
 
-        _, topk_indices = torch.topk(combined_cas, self.config.num_segments // 8, dim=1)
-        # _, topk_indices1 = torch.topk(combined_cas, r, dim=1)
-        cas_top = torch.mean(torch.gather(cas, 1, topk_indices), dim=1)
+    def calculate_module_losses(self, video_scores, pseudo_video_scores, input_feature, decoded_inter, decoded_intra, sampled_embeddings, positives, negatives):
+        loss_pseudo = self.vid_pseudo_loss(video_scores, pseudo_video_scores)
+        loss_nce = self.nce_criterion(sampled_embeddings, positives, negatives)
+        loss_latent_inter = self.latent_loss(input_feature, decoded_inter)
+        loss_latent_intra = self.latent_loss(input_feature, decoded_intra)
+        loss_module = self.nce_weight * loss_nce + self.pseudo_weight * loss_pseudo
+        loss_dict = {
+            'Loss/Total_Module': loss_module,
+            'Loss/NCE': loss_nce,
+            'Loss/Pseudo': loss_pseudo,
+            'Loss/Latent_Inter': loss_latent_inter,
+            'Loss/Latent_Intra': loss_latent_intra
+        }
+        if self.writter:
+            for key, value in loss_dict.items():
+              self.writter.add_scalar('{}'.format(key), value.cpu().item(), self.step)
 
-        return cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2
+        return loss_module
 
+    def get_positives(self, intra_embeddings, temporal, embedding_dim, debug=False): # In future get K input
+        batch_size, temporal, embedding_dim = intra_embeddings.shape
+        intra_embeddings = intra_embeddings.reshape(batch_size * temporal, embedding_dim)
+        nn_indices, nn_embeddings, nn_labels = self.queue.find_nearest_neighbors(intra_embeddings)
+        nn_embeddings = nn_embeddings.reshape(batch_size, temporal, embedding_dim)
+        nn_indices = nn_indices.reshape(batch_size, temporal)
+        if nn_labels is not None:
+          nn_labels = nn_labels.reshape(batch_size, temporal, 3)
+        return nn_indices, nn_embeddings, nn_labels
+
+
+    def get_positives_video_distance(self, full_embeddings, temporal, embedding_dim, debug=False):
+        # In this function we will get the positives by using fft based distance calculation
+        batch_size, temporal, embedding_dim = full_embeddings.shape
+        polled_vids = batch_size
+        vid_embeddings, vid_indices = self.queue.find_nearest_vids(full_embeddings)# Implement this
+        #if vid_labels is not None:
+        #    vid_labels = vid_labels.reshape(batch_size, 3)
+        return vid_embeddings, vid_indices#, vid_labels
+    
+
+    def pretrain_encoder_decoder_step(self, net, loader_iter, step):
+        net.train()
+        data, label, _, _, _ = next(loader_iter)
+        data = data.cuda()
+        label = label.cuda()
+        self.optimizer.zero_grad()
+        video_scores, contrast_pairs, _, _, all_embeddings = net(data)
+        criterion = LatentLoss()
+        decoded_inter = all_embeddings[2]
+        decoded_intra = all_embeddings[3]
+        cost = self.config.latent_loss_pre * (criterion(data, decoded_inter) + criterion(data, decoded_intra))/2.0
+        cost.backward()
+        self.optimizer.step()
+        self.writer.add_scalar('PRE_Latent Loss', cost.cpu().item(), step)
+        return cost
+
+    def pretrain_encoding(self):
+        if self.config.pretrain_encoder_decoder:
+            for step in range(1, self.config.pretrain_num_iters + 1):
+                if (step - 1) % len(self.pre_train_loader) == 0:
+                    loader_iter = iter(self.pre_train_loader)
+                
+                cost = self.pretrain_encoder_decoder_step(self.net, loader_iter, step)
+                if step == 1 or step % self.config.print_freq == 0:
+                    print(('PRETRAIN: Step: [{0:04d}/{1}]\t' \
+                        'Loss {loss:.4f} \t'.format(
+                        step, self.config.pretrain_num_iters, loss=cost.cpu().item())))
+            del self.pre_train_loader
+            del loader_iter
 
     def train(self):
         # resume training
@@ -250,14 +366,37 @@ class ThumosTrainer():
                 self.optimizer.zero_grad()
 
                 # forward pass
-                cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2 = self.forward_pass(_data)
+                (cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f,
+                 actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings) = self.forward_pass(_data)
+                
+                # Sample Intra Embeddings
+                intra_embeddings = all_embeddings['intra_embeddings']
+                embedding_targets = self.sample_embeddings(intra_embeddings)
+                if not self.initialized:
+                    self.initialize(embedding_targets)
 
-                # calcualte pseudo target
+                # Snippet Contrastive Learning
+                positive_indices, positives, positive_labels = self.get_positives(embedding_targets, self.config.num_segments, self.config.proj_dim)
+                negatives, negative_indexes = self.queue.getNegatives(positive_indices)
+                # Video contrastive Learning
+                vid_positives, vid_positives_indices = self.get_positives_video_distance(intra_embeddings, self.config.num_segments, self.config.proj_dim)
+
+                with torch.no_grad():
+                    cas_top_pseudo = self.forward_pass_from_embeddings(vid_positives)
+
+                # calculate pseudo target
                 cls_agnostic_gt = self.calculate_pesudo_target(batch_size, _label, topk_indices)
+                
 
                 # losses
-                cost = self.calculate_all_losses1(contrast_pairs, contrast_pairs_r,contrast_pairs_f, cas_top, _label, action_flow, action_rgb, cls_agnostic_gt, actionness1, actionness2)
-
+                cost = self.calculate_all_losses1(contrast_pairs, contrast_pairs_r,contrast_pairs_f, 
+                                                  cas_top, _label, action_flow, action_rgb, cls_agnostic_gt, actionness1, actionness2)
+                # 
+                loss_module = self.calculate_module_losses(cas_top, self.softmax(cas_top), self.softmax(cas_top_pseudo), 
+                                                                      _data, all_embeddings['decoded_inter'], all_embeddings['decoded_intra'],
+                                                                      embedding_targets, positives, negatives)
+                cost += loss_module
+                self.writter.add_scalar('Loss/Total', loss_module.cpu().item(), self.step) # Add all losses
                 cost.backward()
                 self.optimizer.step()
 
@@ -279,6 +418,7 @@ def main():
     if args.inference_only:
         trainer.test()
     else:
+        trainer.pretrain_encoding()
         trainer.train()
 
 

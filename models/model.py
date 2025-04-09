@@ -6,15 +6,19 @@ import math
 import numpy as np
 torch.set_printoptions(profile="full")
 
+
+from NCELoss.NNIICLUV_Tests.model import NearestNeighborContrastiveI3D
+
 class BaseModel(nn.Module):
-    def __init__(self, len_feature, num_classes, config=None):
+    def __init__(self, len_projection, len_feature, num_classes, config=None):
         super(BaseModel, self).__init__()
+        self.len_projection = len_projection
         self.len_feature = len_feature
         self.num_classes = num_classes
         self.config = config
 
         self.base_module = nn.Sequential(
-            nn.Conv1d(in_channels=self.len_feature, out_channels=512, kernel_size=3, padding=1),
+            nn.Conv1d(in_channels=self.len_projection, out_channels=512, kernel_size=3, padding=1),
             nn.ReLU(),
         )
 
@@ -43,12 +47,12 @@ class BaseModel(nn.Module):
         self.dropout = nn.Dropout(p=0.5)  # 0.5
 
 
-    def forward(self, x):
-        input = x.permute(0, 2, 1)
+    def forward(self, x, x_raw):
+        input = x.permute(0, 2, 1) # this is batch, proj_dim, time
+        input_raw = x_raw.permute(0, 2, 1) # this is batch, 2048, time
 
-
-        emb_flow = self.action_module_flow(input[:, 1024:, :])
-        emb_rgb = self.action_module_rgb(input[:, :1024, :])
+        emb_flow = self.action_module_flow(input_raw[:, 1024:, :])
+        emb_rgb = self.action_module_rgb(input_raw[:, :1024, :])
 
         embedding_flow = emb_flow.permute(0, 2, 1)
         embedding_rgb = emb_rgb.permute(0, 2, 1)
@@ -67,15 +71,21 @@ class BaseModel(nn.Module):
         actionness2 = actionness2.squeeze(1)
 
         return cas, action_flow, action_rgb, actionness1, actionness2, embedding, embedding_flow, embedding_rgb
-
+    
+    def forward_from_latent(self, x):
+        input = x.permute(0, 2, 1) # this is batch, proj_dim, time
+        emb = self.base_module(input)
+        embedding = emb.permute(0, 2, 1)
+        cas = self.cls(emb).permute(0, 2, 1)
+        return cas
 
 class AICL(nn.Module):
     def __init__(self, cfg):
         super(AICL, self).__init__()
-        self.len_feature = 2048
-        self.num_classes = 20
-
-        self.actionness_module = BaseModel(self.len_feature, self.num_classes, cfg)
+        self.num_classes = cfg.num_classes
+        self.cfg = cfg
+        self.projection_module = NearestNeighborContrastiveI3D(self.cfg.len_feature, cfg.proj_dim)
+        self.actionness_module = BaseModel(self.cfg.proj_dim, self.cfg.len_feature, self.num_classes, cfg)
 
         self.softmax = nn.Softmax(dim=1)
         self.softmax_2 = nn.Softmax(dim=2)
@@ -124,12 +134,19 @@ class AICL(nn.Module):
 
         return hard_act, hard_bkg
 
+    def get_video_cls_scores(self, cas, k):
+        sorted_scores, _= cas.sort(descending=True, dim=1)
+        topk_scores = sorted_scores[:, :k, :]
+        video_scores = self.softmax(topk_scores.mean(1))
+        return video_scores  
+
     def forward(self, x):
         num_segments = x.shape[1]
         k_C = num_segments // self.r_C
         k_I = num_segments // self.r_I
 
-        cas, action_flow, action_rgb, actionness1, actionness2, embedding, embedding_flow, embedding_rgb = self.actionness_module(x)
+        intra_embeddings, inter_embeddings, decoded_intra, decoded_inter = self.projection_module(x) # Added a small projection module to the original model
+        cas, action_flow, action_rgb, actionness1, actionness2, embedding, embedding_flow, embedding_rgb = self.actionness_module(intra_embeddings)
 
         aness_np1 = actionness1.cpu().detach().numpy()
         aness_median1 = np.median(aness_np1, 1, keepdims=True)
@@ -170,5 +187,16 @@ class AICL(nn.Module):
             'IA': IAf,
             'IB': IBf
         }
+        all_embeddings = {
+            'intra_embeddings': intra_embeddings,
+            'inter_embeddings': inter_embeddings,
+            'decoded_intra': decoded_intra,
+            'decoded_inter': decoded_inter}        
+        return cas, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings
+    
+    def forward_with_embeddings(self, latent_embeddings):
+        num_segments = latent_embeddings.shape[1]
 
-        return cas, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2
+        # latent_embeddings is already inter_embeddings
+        cas = self.actionness_module.forward_from_latent(latent_embeddings)
+        return cas
