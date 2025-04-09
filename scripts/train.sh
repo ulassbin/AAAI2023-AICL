@@ -3,5 +3,6 @@ python main_thumos.py \
 --model_name ThumosModel \
 --num_epochs 900 \
 --detection_inf_step 50 \
+--verbose  \
 --soft_nms \
---data_path DATA_PATH
+--data_path /home/ulas/Documents/Datasets/ThumosSmallTest/THUMOS14

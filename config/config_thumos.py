@@ -95,6 +95,7 @@ class Config(object):
         self.verbose = args.verbose
         self.log_path = os.path.join(os.path.join(args.output_dir, args.exp_name), 'log')
         # Memory Module parameters
+        self.print_freq = 20
         self.queue_size = 10000
         self.sampling_rate = 0.2
         self.proj_dim = 128

@@ -274,11 +274,8 @@ class ThumosTrainer():
         return cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings
     
     def forward_pass_from_embeddings(self, latent_embeddings):
-        cas, action_flow, action_rgb, actionness1, actionness2, embedding, embedding_flow, embedding_rgb = self.net.forward_with_embeddings(latent_embeddings)
-        combined_cas = misc_utils.instance_selection_function(torch.softmax(cas.detach(), -1),
-                                                              action_flow.permute(0, 2, 1).detach(),
-                                                              action_rgb.permute(0, 2, 1))
-        cas_top, topk_indices = self.get_topk(combined_cas)
+        cas = self.net.forward_with_embeddings(latent_embeddings)
+        cas_top, topk_indices = self.get_topk(cas)
         return cas_top
         
 
@@ -328,14 +325,14 @@ class ThumosTrainer():
         data = data.cuda()
         label = label.cuda()
         self.optimizer.zero_grad()
-        video_scores, contrast_pairs, _, _, all_embeddings = net(data)
+        cas, _, _, _, _, _, _, _, _, _, all_embeddings = net(data)
         criterion = LatentLoss()
-        decoded_inter = all_embeddings[2]
-        decoded_intra = all_embeddings[3]
+        decoded_inter = all_embeddings['decoded_inter']
+        decoded_intra = all_embeddings['decoded_intra']
         cost = self.config.latent_loss_pre * (criterion(data, decoded_inter) + criterion(data, decoded_intra))/2.0
         cost.backward()
         self.optimizer.step()
-        self.writer.add_scalar('PRE_Latent Loss', cost.cpu().item(), step)
+        self.writter.add_scalar('PRE_Latent Loss', cost.cpu().item(), step)
         return cost
 
     def pretrain_encoding(self):
