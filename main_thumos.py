@@ -15,7 +15,8 @@ from inference_thumos import inference
 from utils import misc_utils
 from torch.utils.data import Dataset
 from dataset.thumos_features import ThumosFeature
-from utils.loss import CrossEntropyLoss, GeneralizedCE, LatentLoss
+from utils.loss import CrossEntropyLoss, GeneralizedCE, LatentLoss, VidPseudoLoss
+from NCELoss.NNIICLUV_Tests.loss import InfoNCELoss
 from config.config_thumos import Config, parse_args, class_dict
 from models.model import AICL
 
@@ -141,13 +142,16 @@ class ThumosTrainer():
         self.net = AICL(config)
         self.net = self.net.cuda()
         self.writter = SummaryWriter(config.log_path)
-
+        self.softmax = nn.Softmax(dim=1)
         # data
         self.train_loader, self.test_loader, self.pre_train_loader = get_dataloaders(self.config)
 
         # loss, optimizer
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=self.config.lr, betas=(0.9, 0.999), weight_decay=0.0005)
         self.criterion = CrossEntropyLoss()
+        self.nce_criterion = InfoNCELoss()
+        self.vid_pseudo_loss = LatentLoss()
+        self.latent_loss = LatentLoss()
         self.Lgce = GeneralizedCE(q=self.config.q_val)
 
         # Memory module
@@ -169,7 +173,7 @@ class ThumosTrainer():
 
     def sample_embeddings(self, embeddings):
         batch_size, t, feature_dim = embeddings.shape  # Assuming fixed t
-        new_size = int(self.cfg.SAMPLING_RATE * t)
+        new_size = int(self.config.sampling_rate * t)
         sample_indexes = torch.randint(0, t, (batch_size, new_size), device=embeddings.device)
         # Use advanced indexing to preserve gradients
         sampled = embeddings[torch.arange(batch_size).unsqueeze(1), sample_indexes]
@@ -215,7 +219,8 @@ class ThumosTrainer():
         modality_consistent_loss = 0.5 * F.mse_loss(action_flow, action_rgb) + 0.5 * F.mse_loss(action_rgb, action_flow)
         action_consistent_loss = 0.5 * F.mse_loss(actionness1, actionness2) + 0.5 * F.mse_loss(actionness2, actionness1)
 
-        cost = base_loss + class_agnostic_loss  + 5*modality_consistent_loss + 0.01*loss_contrastive + 0.1*action_consistent_loss
+        cost = self.config.classification_weight * base_loss + class_agnostic_loss  + self.config.modality_weight*modality_consistent_loss 
+        + self.config.contrastive_weight*loss_contrastive + self.config.action_consistency_weight*action_consistent_loss
         
         # Module additional loss terms
         # cost += self.latent_weight * (loss_latent_inter + loss_latent_intra) # encoding-decoding loss
@@ -271,6 +276,7 @@ class ThumosTrainer():
                                                               action_rgb.permute(0, 2, 1))
 
         cas_top, topk_indices = self.get_topk(combined_cas)
+        cas_top = torch.mean(torch.gather(cas, 1, topk_indices), dim=1)
         return cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings
     
     def forward_pass_from_embeddings(self, latent_embeddings):
@@ -284,7 +290,7 @@ class ThumosTrainer():
         loss_nce = self.nce_criterion(sampled_embeddings, positives, negatives)
         loss_latent_inter = self.latent_loss(input_feature, decoded_inter)
         loss_latent_intra = self.latent_loss(input_feature, decoded_intra)
-        loss_module = self.nce_weight * loss_nce + self.pseudo_weight * loss_pseudo
+        loss_module = self.config.nce_weight * loss_nce + self.config.pseudo_weight * loss_pseudo + self.config.latent_loss_weight * (loss_latent_inter + loss_latent_intra)
         loss_dict = {
             'Loss/Total_Module': loss_module,
             'Loss/NCE': loss_nce,
@@ -355,7 +361,7 @@ class ThumosTrainer():
 
         # training
         for epoch in range(self.config.num_epochs):
-
+            self.total_loss_per_epoch = 0
             for _data, _label, temp_anno, _, _ in self.train_loader:
 
                 batch_size = _data.shape[0]
@@ -388,12 +394,11 @@ class ThumosTrainer():
                 # losses
                 cost = self.calculate_all_losses1(contrast_pairs, contrast_pairs_r,contrast_pairs_f, 
                                                   cas_top, _label, action_flow, action_rgb, cls_agnostic_gt, actionness1, actionness2)
-                # 
-                loss_module = self.calculate_module_losses(cas_top, self.softmax(cas_top), self.softmax(cas_top_pseudo), 
-                                                                      _data, all_embeddings['decoded_inter'], all_embeddings['decoded_intra'],
+                loss_module = self.calculate_module_losses(self.softmax(cas_top), self.softmax(cas_top_pseudo), _data, 
+                                                           all_embeddings['decoded_inter'], all_embeddings['decoded_intra'],
                                                                       embedding_targets, positives, negatives)
                 cost += loss_module
-                self.writter.add_scalar('Loss/Total', loss_module.cpu().item(), self.step) # Add all losses
+                self.writter.add_scalar('Loss/Total', cost.cpu().item(), self.step) # Add all losses
                 cost.backward()
                 self.optimizer.step()
 
@@ -402,8 +407,17 @@ class ThumosTrainer():
 
                 # evaluation
                 self.evaluate(epoch=epoch)
+            if self.writter:
+                self.writter.add_scalar('Loss/Total_Per_Epoch', self.total_loss_per_epoch, epoch)
 
-
+def save_config(config):
+    print('Saving config to {}'.format(config.log_path))
+    if not os.path.exists(config.log_path):
+        os.makedirs(config.log_path)
+    # save as txt
+    with open(os.path.join(config.log_path, 'config.txt'), 'w') as f:
+        for key, value in config.__dict__.items():
+            f.write(f'{key}: {value}\n')
 
 def main():
     args = parse_args()
@@ -415,6 +429,7 @@ def main():
     if args.inference_only:
         trainer.test()
     else:
+        save_config(config)
         trainer.pretrain_encoding()
         trainer.train()
 

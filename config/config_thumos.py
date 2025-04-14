@@ -100,14 +100,19 @@ class Config(object):
         self.sampling_rate = 0.2
         self.proj_dim = 128
         self.classify_with_projection = False
+        # Classification weight
+        self.classification_weight = 1.0 # Originally 1.0
+        self.modality_weight = 0.1 # 0.1
+        self.contrastive_weight = 0.1 # 0.1
+        self.action_consistency_weight = 0.1 # 0.1
         # Memory module weights
-        self.nce_weight = 0.1
-        self.pseudo_weight = 10.0
+        self.nce_weight = 0.0 # 0.1
+        self.pseudo_weight = 10.0 # 10.0
         # Latent Representation parameters
-        self.latent_loss_weight = 10.0
+        self.latent_loss_weight = 10.0 #10.0
         self.pretrain_encoder_decoder = True
         self.pretrain_batch_size = 32 # 100 originally
-        self.pretrain_num_iters = 1000
+        self.pretrain_num_iters = 1000 # 1000 originally
         self.latent_loss_pre = 100 # 1000 originially
 
 

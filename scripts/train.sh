@@ -1,5 +1,8 @@
+# Get time here
+date_str=$(date +%d_%m_%H_%M)
+exp_name="Thumos_JustNce_$date_str"
 python main_thumos.py \
---exp_name Thumos_1 \
+--exp_name $exp_name \
 --model_name ThumosModel \
 --num_epochs 900 \
 --detection_inf_step 50 \
