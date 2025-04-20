@@ -286,9 +286,6 @@ class ThumosTrainer():
         return cas_top
         
     def forward_pass_with_k_embeddings(self, topk_indices, distances):
-        print('Forward pass with k embeddings')
-        print('Topk indices shape: ', topk_indices.shape)
-        print('Distances shape: ', distances.shape)
         cas_targets = self.queue.get_fused_cas_targets(self.net, topk_indices, distances)
         cas_top, topk_action_indices = self.get_topk(cas_targets)
         return cas_top, cas_targets
@@ -328,8 +325,8 @@ class ThumosTrainer():
         batch_size, temporal, embedding_dim = full_embeddings.shape
         polled_vids = batch_size
         distances, vid_indices = self.queue.find_nearest_vids(full_embeddings)# Implement this
-        print('Vid indices shape: ', vid_indices.shape)
-        print('Distances shape: ', distances.shape)
+        #print('Vid indices shape: ', vid_indices.shape)
+        #print('Distances shape: ', distances.shape)
         vid_embeddings = self.queue.getVidDataBatched(vid_indices)
         #if vid_labels is not None:
         #    vid_labels = vid_labels.reshape(batch_size, 3)

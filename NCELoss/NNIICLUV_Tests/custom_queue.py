@@ -141,17 +141,19 @@ class Queue():
 
     def getVidDataBatched(self, indices):
         # Indices is of shape (batch, top_k)
+        max_length = max([len(self.vid_queue[i]) for i in indices.flatten()])
         # Skipping padding
         all_vid_data = []
-        print('Indices shape: ', indices.shape)
         for b in indices:
             padded_vid_data = []
             for top_k in b:
                 vid_data = self.queue[self.vid_queue[top_k]]
-                padded_vid_data.append(vid_data)
+                padding = torch.zeros((max_length - vid_data.shape[0], self.embedding_dim), device=self.device)
+                #print('Vid data {} shape: '.format(top_k), vid_data.shape)
+                padded_vid_data.append(torch.cat((vid_data, padding), dim=0))
             all_vid_data.append(torch.stack(padded_vid_data, dim=0))
         final_tensor = torch.stack(all_vid_data, dim=0)
-        print('Final tensor shape: ', final_tensor.shape)
+        #print('Final tensor shape: ', final_tensor.shape)
         return final_tensor  # Now all_vid_data should be of shape (batch, top_k, max_length, feature_dim)
             
            
@@ -171,12 +173,8 @@ class Queue():
         # Distances should be of shape (batch_size, num_vids)
         # q: how to sort the distances and get the indices?
         topk_vals, topk_indices = torch.topk(distances, max_k, dim=1, largest=False)
-        print('Topk vals shape: ', topk_vals.shape)
-        print('Topk indices shape: ', topk_indices.shape)
         topk_vid_indices = torch.zeros((full_embeddings.shape[0], max_k), dtype=int, device=full_embeddings.device)
         #topk_vid_indices = torch.gather(vid_indices, dim=1, topk_indices).to('cuda')
-        print('Vid indices shape: ', vid_indices.shape)
-        print('Topk vid indices shape: ', topk_vid_indices.shape)
         for i in range(topk_indices.shape[0]):
             for j in range(topk_indices.shape[1]):
                 topk_vid_indices[i][j] = vid_indices[[topk_indices[i][j]]]
