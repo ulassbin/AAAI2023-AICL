@@ -139,20 +139,77 @@ class Queue():
             padded_vid_data.append(torch.cat((vid_data, padding), dim=0))
         return torch.stack(padded_vid_data, dim=0)
 
-    def find_nearest_vids(self, full_embeddings, max_samples=20):
+    def getVidDataBatched(self, indices):
+        # Indices is of shape (batch, top_k)
+        # Skipping padding
+        all_vid_data = []
+        print('Indices shape: ', indices.shape)
+        for b in indices:
+            padded_vid_data = []
+            for top_k in b:
+                vid_data = self.queue[self.vid_queue[top_k]]
+                padded_vid_data.append(vid_data)
+            all_vid_data.append(torch.stack(padded_vid_data, dim=0))
+        final_tensor = torch.stack(all_vid_data, dim=0)
+        print('Final tensor shape: ', final_tensor.shape)
+        return final_tensor  # Now all_vid_data should be of shape (batch, top_k, max_length, feature_dim)
+            
+           
+
+    def find_nearest_vids(self, full_embeddings, max_samples=20, max_k=5):
         # We have vids stored in a list called vid_queue
         num_vids = len(self.vid_queue) # How many unique videos we have
         if(num_vids == 0):
             print('Vid queue is currently empty')
             return None, None
-        vid_indices = self.getVidIndices(max_samples)
+        vid_indices = self.getVidIndices(max_samples).to('cuda')
         queued_vid_targets = self.getVidData(vid_indices)
         #print('Target vids shape: ', queued_vid_targets.shape)
         #print('Full embeddings shape: ', full_embeddings.shape)
         distances = torch_fft.fft_distance_2d_batch(full_embeddings, queued_vid_targets) # This might cause memory issues, might need to partition into smaller chunks later.
-        closest = distances.argmin(dim=1).cpu().numpy()
-        return queued_vid_targets[closest], vid_indices[closest]
-       
+        # Lets sort the distances and get the sorted indices
+        # Distances should be of shape (batch_size, num_vids)
+        # q: how to sort the distances and get the indices?
+        topk_vals, topk_indices = torch.topk(distances, max_k, dim=1, largest=False)
+        print('Topk vals shape: ', topk_vals.shape)
+        print('Topk indices shape: ', topk_indices.shape)
+        topk_vid_indices = torch.zeros((full_embeddings.shape[0], max_k), dtype=int, device=full_embeddings.device)
+        #topk_vid_indices = torch.gather(vid_indices, dim=1, topk_indices).to('cuda')
+        print('Vid indices shape: ', vid_indices.shape)
+        print('Topk vid indices shape: ', topk_vid_indices.shape)
+        for i in range(topk_indices.shape[0]):
+            for j in range(topk_indices.shape[1]):
+                topk_vid_indices[i][j] = vid_indices[[topk_indices[i][j]]]
+        #topk_vid_indices = vid_indices.to('cuda')[topk_indices]
+        return topk_vals, topk_vid_indices
+
+    def cas_fusion(self, cas_tensor, weights=None):
+        # where cas is examplextemporalxclasses
+        # weights is examplextemporal
+        if weights is None:
+           weights = torch.ones(cas_tensor.shape[0], cas_tensor.shape[1], device=cas_tensor.device)
+        # Normalize weights
+        weights = F.softmax(weights, dim=0)
+        # Expand weights to match the feature dimension
+        weights = weights.view(weights.shape[0], 1, 1)
+        # Perform weighted sum
+        weighted_sum = torch.sum(cas_tensor * weights, dim=0)
+        # resultant should be 1xtemporalxclasses
+        return weighted_sum
+    
+    def get_fused_cas_targets(self, model, indices, weights):
+        # indices: (batch, top_k)
+        # weights: (batch, top_k)
+        fused_cas_list = []
+        vid_targets = self.getVidDataBatched(indices)  # shape: (batch, top_k, T, feature)
+        for i in range(indices.shape[0]):
+            cas_targets = model.forward_with_embeddings(vid_targets[i])
+            fused_cas = self.cas_fusion(cas_targets, weights[i])  # shape: (T, num_classes)
+            fused_cas_list.append(fused_cas)
+
+        # Stack to shape: (batch, T, num_classes)
+        return torch.stack(fused_cas_list, dim=0)
+
 
     def get_queue_without_indices(self, indices):
         mask = torch.ones(self.queue_size, dtype=bool)
