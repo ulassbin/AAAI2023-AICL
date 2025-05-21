@@ -324,7 +324,7 @@ class ThumosTrainer():
         # In this function we will get the positives by using fft based distance calculation
         batch_size, temporal, embedding_dim = full_embeddings.shape
         polled_vids = batch_size
-        distances, vid_indices = self.queue.find_nearest_vids(full_embeddings)# Implement this
+        distances, vid_indices = self.queue.find_nearest_vids(full_embeddings, self.config.sampled_vid_num)# Implement this
         #print('Vid indices shape: ', vid_indices.shape)
         #print('Distances shape: ', distances.shape)
         vid_embeddings = self.queue.getVidDataBatched(vid_indices)

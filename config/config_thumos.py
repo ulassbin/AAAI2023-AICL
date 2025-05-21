@@ -106,14 +106,15 @@ class Config(object):
         self.contrastive_weight = 0.1 # 0.1
         self.action_consistency_weight = 0.1 # 0.1
         # Memory module weights
-        self.nce_weight = 0.0 # 0.1
+        self.nce_weight = 1.0 # 0.1
         self.fft_k = 5
         self.pseudo_weight = 10.0 # 10.0
+        self.sampled_vid_num = 50
         # Latent Representation parameters
         self.latent_loss_weight = 10.0 #10.0
         self.pretrain_encoder_decoder = True
-        self.pretrain_batch_size = 32 # 100 originally
-        self.pretrain_num_iters = 10 # 1000 originally
+        self.pretrain_batch_size = 100 # 100 originally
+        self.pretrain_num_iters = 1000 # 1000 originally
         self.latent_loss_pre = 100 # 1000 originially
 
 
