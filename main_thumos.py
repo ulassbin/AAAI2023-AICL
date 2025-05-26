@@ -164,9 +164,9 @@ class ThumosTrainer():
         self.step = 0
         self.total_loss_per_epoch = 0
         
-    def initialize(self, embeddings):
+    def initialize(self, embeddings, vid_names):
         print('Initializing with ', embeddings.shape)
-        self.queue.enqueue(embeddings)
+        self.queue.enqueue(embeddings, vid_names)
         self.initialized = True
         return
 
@@ -290,6 +290,11 @@ class ThumosTrainer():
         cas_top, topk_action_indices = self.get_topk(cas_targets)
         return cas_top, cas_targets
 
+    def forward_pass_with_k_embeddings2(self, topk_indices, distances, prev_data):
+        cas_targets = self.queue.get_fused_cas_targets2(self.net, topk_indices, distances, prev_data)
+        cas_top, topk_action_indices = self.get_topk(cas_targets)
+        return cas_top, cas_targets
+
     def calculate_module_losses(self, video_scores, pseudo_video_scores, input_feature, decoded_inter, decoded_intra, sampled_embeddings, positives, negatives):
         loss_pseudo = self.vid_pseudo_loss(video_scores, pseudo_video_scores)
         loss_nce = self.nce_criterion(sampled_embeddings, positives, negatives)
@@ -320,17 +325,18 @@ class ThumosTrainer():
         return nn_indices, nn_embeddings, nn_labels
 
 
-    def get_positives_video_distance(self, full_embeddings, temporal, embedding_dim, k=1, debug=False):
+    def get_positives_video_distance(self, full_embeddings, vid_names, temporal, embedding_dim, k=1, debug=False):
         # In this function we will get the positives by using fft based distance calculation
         batch_size, temporal, embedding_dim = full_embeddings.shape
         polled_vids = batch_size
-        distances, vid_indices = self.queue.find_nearest_vids(full_embeddings, self.config.sampled_vid_num)# Implement this
+        distances, vid_indices, prev_samples = self.queue.find_nearest_vids(full_embeddings, vid_names, self.config.sampled_vid_num)# Implement this
         #print('Vid indices shape: ', vid_indices.shape)
         #print('Distances shape: ', distances.shape)
         vid_embeddings = self.queue.getVidDataBatched(vid_indices)
+        extra_data = self.getVidDataBatchedFromPrevious(prev_samples)
         #if vid_labels is not None:
         #    vid_labels = vid_labels.reshape(batch_size, 3)
-        return vid_embeddings, vid_indices, distances#, vid_labels
+        return vid_embeddings, vid_indices, distances, prev_samples, extra_data
     
 
     def pretrain_encoder_decoder_step(self, net, loader_iter, step):
@@ -370,7 +376,7 @@ class ThumosTrainer():
         # training
         for epoch in range(self.config.num_epochs):
             self.total_loss_per_epoch = 0
-            for _data, _label, temp_anno, _, _ in self.train_loader:
+            for _data, _label, temp_anno, vid_names, _ in self.train_loader:
 
                 batch_size = _data.shape[0]
                 _data, _label = _data.cuda(), _label.cuda()
@@ -384,19 +390,22 @@ class ThumosTrainer():
                 intra_embeddings = all_embeddings['intra_embeddings']
                 embedding_targets = self.sample_embeddings(intra_embeddings)
                 if not self.initialized:
-                    self.initialize(embedding_targets)
+                    self.initialize(embedding_targets, vid_names)
 
                 # Snippet Contrastive Learning
                 positive_indices, positives, positive_labels = self.get_positives(embedding_targets, self.config.num_segments, self.config.proj_dim)
                 negatives, negative_indexes = self.queue.getNegatives(positive_indices)
                 # Video contrastive Learning
-                vid_positives, vid_positives_indices, distances = self.get_positives_video_distance(intra_embeddings, self.config.num_segments, self.config.proj_dim, self.config.fft_k)
-
+                vid_positives, vid_positives_indices, distances, prev_samples, prev_data = self.get_positives_video_distance(intra_embeddings, vid_names, self.config.num_segments, self.config.proj_dim, self.config.fft_k)
+                # Btw prev_samples can be traced to visualize relationships between similar videos
                 with torch.no_grad():
                     if(self.config.fft_k <= 1):
                         cas_top_pseudo = self.forward_pass_from_embeddings(vid_positives[0])
                     else:
-                        cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings(vid_positives_indices, distances)
+                        if(prev_data is not None): # Also pass previous data
+                            cas_top_pseudo = self.forward_pass_with_k_embeddings2(vid_positives_indices, distances, prev_data)
+                        else:
+                          cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings(vid_positives_indices, distances)
 
 
                 # calculate pseudo target
@@ -416,6 +425,7 @@ class ThumosTrainer():
 
                 self.total_loss_per_epoch += cost.cpu().item()
                 self.step += 1
+                self.queue.enqueue(intra_embeddings, vid_names)
 
                 # evaluation
                 self.evaluate(epoch=epoch)
