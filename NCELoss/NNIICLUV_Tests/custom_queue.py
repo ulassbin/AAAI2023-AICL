@@ -48,13 +48,13 @@ class Queue():
             negative_embeddings[i][j] = self.queue[q_ids] # Get the embeddings
           return negative_embeddings.to(self.device), negative_indexes.to(self.device)
 
-    def append(self, embeddings, labels=None, vid_names):
+    def append(self, embeddings, vid_names, labels=None):
       batch_size, t, feature_dim = embeddings.shape # Assuming fixed t
       num_snips = batch_size*t
       if labels is not None:
         labels = labels.reshape(-1,3)
         self.label_queue[self.ptr:self.ptr + num_snips] = copy.deepcopy(labels)
-
+      #print(f'Num_snips {num_snips}, embed_len {len(embeddings.reshape(-1,feature_dim))}')
       self.queue[self.ptr:self.ptr + num_snips] = copy.deepcopy(embeddings.reshape(-1,feature_dim).detach())
       for i in range(batch_size):
         indexes = torch.arange(self.ptr + i*t, self.ptr + i*t + t)
@@ -97,9 +97,9 @@ class Queue():
         if self.ptr + num_items > self.queue_size:
             overflow = (self.ptr + num_items) - self.queue_size
             self.shift(overflow) # shift the queue
-            self.append(embeddings, labels, vid_names)
+            self.append(embeddings, vid_names, labels)
         else:
-          self.append(embeddings, labels, vid_names)
+          self.append(embeddings, vid_names, labels)
 
     def find_nearest_neighbors(self, query_embeddings):
       query_norm = F.normalize(query_embeddings, dim=1)
@@ -165,14 +165,14 @@ class Queue():
         # This function is used to get the nearest videos from the previous distances
         # 
         # append to queued_vid_targets
-        indices = {}
-        if len(self.distances) == 0:
-            print('No previous distances found')
-            return []
+        #print('Len vid names: ', len(vid_names))
+        indices = {f'{item}':[] for item in vid_names}
+        if len(self.distances) == 0 or len(vid_names) == 0:
+            print(f'Cant get prev distances REASON: Self dist {len(self.distances)}, vid_names: {len(vid_names)}')
+            return indices
         else:
-            all_keys = {}
             for i, vid_name in enumerate(vid_names):
-                distance_list = self.vid_distances.get(vid_name, []) # this returns a dictionary
+                distance_list = self.distances.get(vid_name, {}) # this returns a dictionary
                 vals = []
                 keys = []
                 for name, distance in distance_list.items():
@@ -186,29 +186,33 @@ class Queue():
     def getVidDataBatchedFromPrevious(self, indices):
        data = [] # It is going to be a list of tensors, first dimension is batch, second is top_k
                  # it is going to be <batch, [[vid_data, distance], ...]>
-        for vid_name, target_vids in indices.items():
-            padded_vid_data = []
-            # get index from self.vid_names
-            for target_vid, distance in target_vids:
-                if target_vid in self.vid_names:
-                    vid_index = self.vid_names.index(target_vid)
-                    vid_data = self.queue[self.vid_queue[vid_index]]
-                    padded_vid_data.append([vid_data, distance])
-                else:
-                    print('Target video {} not found in vid_names'.format(target_vid))
-            data.append(copy.deepcopy(padded_vid_data))
-        # Now data is a list of lists, where each inner list contains [vid_data, distance]
-        return data
+       #if indices == None:
+       #    return data
+       for vid_name, target_vids in indices.items():
+           padded_vid_data = []
+           # get index from self.vid_names
+           for target_vid, distance in target_vids:
+               if target_vid in self.vid_names:
+                   vid_index = self.vid_names.index(target_vid)
+                   vid_data = self.queue[self.vid_queue[vid_index]]
+                   padded_vid_data.append([vid_data, distance])
+               else:
+                   print('Target video {} not found in vid_names {}'.format(target_vid, len(self.vid_names)))
+           print(f'{vid_name} padded vid data {len(padded_vid_data)}')
+           data.append(copy.deepcopy(padded_vid_data))
+       # Now data is a list of lists, where each inner list contains [vid_data, distance]
+       return data
 
     def find_nearest_vids(self, full_embeddings, vid_names, max_samples=20, max_k=5, random_ratio=0.5):
         # We have vids stored in a list called vid_queue
         num_vids = len(self.vid_queue) # How many unique videos we have
         if(num_vids == 0):
             print('Vid queue is currently empty')
-            return None, None
+            return None, None, None
         
-        prev_distance_samples = self.getFromPreviousDistances(full_embeddings, vid_names, max_samples)
+        prev_distance_samples = self.getFromPreviousDistances(vid_names)
         vid_indices = self.getVidIndices(max_samples).to('cuda')
+        target_names = [self.vid_names[i] for i in vid_indices.cpu().numpy()]
         # Else just use random indices    
         queued_vid_targets = self.getVidData(vid_indices)
         #print('Target vids shape: ', queued_vid_targets.shape)
@@ -216,6 +220,10 @@ class Queue():
         distances = torch_fft.fft_distance_2d_batch(full_embeddings, queued_vid_targets) # This might cause memory issues, might need to partition into smaller chunks later.
         # Lets sort the distances and get the sorted indices
         # Distances should be of shape (batch_size, num_vids)
+        # We have to store them:
+        for i in range(distances.shape[0]):
+            for j in range(distances.shape[1]):
+                self.distances[vid_names[i]][target_names[j]] = distances[i][j].detach().cpu().item()
         # q: how to sort the distances and get the indices?
         topk_vals, topk_indices = torch.topk(distances, max_k, dim=1, largest=False)
         topk_vid_indices = torch.zeros((full_embeddings.shape[0], max_k), dtype=int, device=full_embeddings.device)
@@ -258,14 +266,23 @@ class Queue():
         # weights: (batch, top_k)
         fused_cas_list = []
         vid_targets = self.getVidDataBatched(indices)  # shape: (batch, top_k, T, feature)
+        #print(f'Batch {indices.shape[0]}, Data {len(prev_data)}') 
         for i in range(indices.shape[0]):
             similar_vids = vid_targets[i] # from random sampling
+            similar_weights = weights[i]
+            #print(f'Base_Vid {i} Weights {len(weights[i])}, Prev_data {len(prev_data[i])}')
             for j in range(len(prev_data[i])): # from similar previous distances
                 prev_data_item = prev_data[i][j]
-                similar_vids = torch.cat((similar_vids, prev_data_item[0].unsqueeze(0)), dim=0)
-                weights[i] = torch.cat((weights[i], torch.tensor([prev_data_item[1]], device=weights.device)), dim=0)
-            cas_targets = model.forward_with_embeddings(vid_targets[i])
-            fused_cas = self.cas_fusion(cas_targets, weights[i])  # shape: (T, num_classes)
+                #print(f'Base_vid {similar_vids.shape}, {prev_data_item[0].shape}')
+                pad_len = similar_vids.shape[1] - prev_data_item[0].shape[0]
+                if(pad_len > 0):
+                    # pad beginning part!
+                    pad_tensor = torch.zeros((pad_len, prev_data_item[0].shape[1]), device=prev_data_item[0].device)
+                    prev_data_item[0] = torch.cat([pad_tensor, prev_data_item[0]],dim=0)
+                similar_vids = torch.cat((similar_vids, prev_data_item[0].unsqueeze(0)), dim=0) # appends the video itself
+                similar_weights = torch.cat((similar_weights, torch.tensor([prev_data_item[1]], device=similar_weights.device)), dim=0) # appends the distance
+            cas_targets = model.forward_with_embeddings(similar_vids)
+            fused_cas = self.cas_fusion(cas_targets, similar_weights)  # shape: (T, num_classes)
             fused_cas_list.append(fused_cas)
 
         # Stack to shape: (batch, T, num_classes)

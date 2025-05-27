@@ -333,7 +333,8 @@ class ThumosTrainer():
         #print('Vid indices shape: ', vid_indices.shape)
         #print('Distances shape: ', distances.shape)
         vid_embeddings = self.queue.getVidDataBatched(vid_indices)
-        extra_data = self.getVidDataBatchedFromPrevious(prev_samples)
+        extra_data = self.queue.getVidDataBatchedFromPrevious(prev_samples)
+        print(f'Prev Samples {len(prev_samples)}, extra_data {len(extra_data)}')
         #if vid_labels is not None:
         #    vid_labels = vid_labels.reshape(batch_size, 3)
         return vid_embeddings, vid_indices, distances, prev_samples, extra_data
@@ -376,8 +377,10 @@ class ThumosTrainer():
         # training
         for epoch in range(self.config.num_epochs):
             self.total_loss_per_epoch = 0
+            count = 0;
             for _data, _label, temp_anno, vid_names, _ in self.train_loader:
-
+                print(f'Train Epoch {epoch}, progress {count/len(self.train_loader)*100.0}')
+                count +=1
                 batch_size = _data.shape[0]
                 _data, _label = _data.cuda(), _label.cuda()
                 self.optimizer.zero_grad()
@@ -403,7 +406,7 @@ class ThumosTrainer():
                         cas_top_pseudo = self.forward_pass_from_embeddings(vid_positives[0])
                     else:
                         if(prev_data is not None): # Also pass previous data
-                            cas_top_pseudo = self.forward_pass_with_k_embeddings2(vid_positives_indices, distances, prev_data)
+                            cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings2(vid_positives_indices, distances, prev_data)
                         else:
                           cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings(vid_positives_indices, distances)
 
