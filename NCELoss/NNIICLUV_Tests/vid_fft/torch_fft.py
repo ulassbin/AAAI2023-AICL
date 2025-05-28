@@ -69,11 +69,11 @@ def fft_distance_2d_batch(video_batch1, video_batch2):
     convolution_result = torch.real(fft_mult).sum(dim=-1)  # Summing over feature dimension
 
     # Peak value in the convolution result for each pair (across temporal dimension)
-    peak_values = torch.amax(convolution_result, dim=2)
+    peak_values, shift_indices = torch.max(convolution_result, dim=2)
 
     # Distance as the inverse of peak value (to ensure similarity yields a small distance)
     distances = 1 / (peak_values + 1e-10)  # Add small value to avoid division by zero
-    return distances
+    return distances, shift_indices
 
 # Function to compute the distance matrix for a list of videos with batching
 def cdist_fft_2d_batched(videos, batch_size=32):

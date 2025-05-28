@@ -15,7 +15,7 @@ from inference_thumos import inference
 from utils import misc_utils
 from torch.utils.data import Dataset
 from dataset.thumos_features import ThumosFeature
-from utils.loss import CrossEntropyLoss, GeneralizedCE, LatentLoss, VidPseudoLoss
+from utils.loss import CrossEntropyLoss, GeneralizedCE, LatentLoss, LatentLossMasked, VidPseudoLoss
 from NCELoss.NNIICLUV_Tests.loss import InfoNCELoss
 from config.config_thumos import Config, parse_args, class_dict
 from models.model import AICL
@@ -150,7 +150,7 @@ class ThumosTrainer():
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=self.config.lr, betas=(0.9, 0.999), weight_decay=0.0005)
         self.criterion = CrossEntropyLoss()
         self.nce_criterion = InfoNCELoss()
-        self.vid_pseudo_loss = LatentLoss()
+        self.vid_pseudo_loss = LatentLossMasked()
         self.latent_loss = LatentLoss()
         self.Lgce = GeneralizedCE(q=self.config.q_val)
 
@@ -290,8 +290,8 @@ class ThumosTrainer():
         cas_top, topk_action_indices = self.get_topk(cas_targets)
         return cas_top, cas_targets
 
-    def forward_pass_with_k_embeddings2(self, topk_indices, distances, prev_data):
-        cas_targets = self.queue.get_fused_cas_targets2(self.net, topk_indices, distances, prev_data)
+    def forward_pass_with_k_embeddings2(self, topk_indices, distances, shifts, prev_data):
+        cas_targets = self.queue.get_fused_cas_targets2(self.net, topk_indices, distances, shifts, prev_data)
         cas_top, topk_action_indices = self.get_topk(cas_targets)
         return cas_top, cas_targets
 
@@ -329,7 +329,7 @@ class ThumosTrainer():
         # In this function we will get the positives by using fft based distance calculation
         batch_size, temporal, embedding_dim = full_embeddings.shape
         polled_vids = batch_size
-        distances, vid_indices, prev_samples = self.queue.find_nearest_vids(full_embeddings, vid_names, self.config.sampled_vid_num)# Implement this
+        distances, vid_indices, shifts, prev_samples = self.queue.find_nearest_vids(full_embeddings, vid_names, self.config.sampled_vid_num)# Implement this
         #print('Vid indices shape: ', vid_indices.shape)
         #print('Distances shape: ', distances.shape)
         vid_embeddings = self.queue.getVidDataBatched(vid_indices)
@@ -337,7 +337,7 @@ class ThumosTrainer():
         print(f'Prev Samples {len(prev_samples)}, extra_data {len(extra_data)}')
         #if vid_labels is not None:
         #    vid_labels = vid_labels.reshape(batch_size, 3)
-        return vid_embeddings, vid_indices, distances, prev_samples, extra_data
+        return vid_embeddings, vid_indices, distances, shifts, prev_samples, extra_data
     
 
     def pretrain_encoder_decoder_step(self, net, loader_iter, step):
@@ -399,14 +399,14 @@ class ThumosTrainer():
                 positive_indices, positives, positive_labels = self.get_positives(embedding_targets, self.config.num_segments, self.config.proj_dim)
                 negatives, negative_indexes = self.queue.getNegatives(positive_indices)
                 # Video contrastive Learning
-                vid_positives, vid_positives_indices, distances, prev_samples, prev_data = self.get_positives_video_distance(intra_embeddings, vid_names, self.config.num_segments, self.config.proj_dim, self.config.fft_k)
+                vid_positives, vid_positives_indices, distances, shifts, prev_samples, prev_data = self.get_positives_video_distance(intra_embeddings, vid_names, self.config.num_segments, self.config.proj_dim, self.config.fft_k)
                 # Btw prev_samples can be traced to visualize relationships between similar videos
                 with torch.no_grad():
                     if(self.config.fft_k <= 1):
                         cas_top_pseudo = self.forward_pass_from_embeddings(vid_positives[0])
                     else:
                         if(prev_data is not None): # Also pass previous data
-                            cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings2(vid_positives_indices, distances, prev_data)
+                            cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings2(vid_positives_indices, distances, shifts, prev_data)
                         else:
                           cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings(vid_positives_indices, distances)
 

@@ -51,6 +51,21 @@ class LatentLoss(nn.Module):
 
 
 
+class LatentLossMasked(nn.Module):
+    def __init__(self):
+        super(LatentLossMasked, self).__init__()
+        self.mse_criterion = nn.MSELoss(reduction='none')
+        self.eps = 0.0001
+
+    def forward(self, base_feature, decoded_feature):
+        # Create a mask: 1 where decoded_feature ≠ 0, 0 where it is
+        mask = (decoded_feature != 0).float()
+        # Get MSE
+        loss = self.mse_criterion(base_feature,decoded_feature)
+        masked_loss = loss * mask
+        normalized_loss = masked_loss.sum() / (mask.sum() + self.eps)
+
+
 class TotalLoss(nn.Module):
     def __init__(self, cfg):
         super(TotalLoss, self).__init__()
