@@ -64,7 +64,7 @@ class LatentLossMasked(nn.Module):
         loss = self.mse_criterion(base_feature,decoded_feature)
         masked_loss = loss * mask
         normalized_loss = masked_loss.sum() / (mask.sum() + self.eps)
-
+        return normalized_loss
 
 class TotalLoss(nn.Module):
     def __init__(self, cfg):
