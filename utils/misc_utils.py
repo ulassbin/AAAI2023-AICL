@@ -111,6 +111,9 @@ def result2json(result):
     result_file = []
     for i in range(len(result)):
         for j in range(len(result[i])):
+            #print("Class dict len {}".format(len(class_dict)))
+            #for keys, vals in class_dict.items():
+            #    print(f"Dict {keys}, : {vals}")
             line = {'label': class_dict[result[i][j][0]], 'score300': result[i][j][1],   # 300
                     'segment': [result[i][j][2], result[i][j][3]]}
             result_file.append(line)

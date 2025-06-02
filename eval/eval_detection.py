@@ -210,6 +210,14 @@ class ANETEval(object):
             if videoid in self.blocked_videos:
                 continue
             for result in v:
+                if not (result['label'] in self.activity_index):
+                   has_str = (str(result['label']) in self.activity_index)
+                   has_int = (int(result['label']) in self.activity_index)
+                   print(f"Label: {result['label']} is missing but int: {has_int} str: {has_str} base_type: {type(result['label'])}")
+                   print(f"Adding New label {result['label']} as {len(self.activity_index)}")
+                   self.activity_index[result['label']] = len(self.activity_index)
+                   for keys, values in self.activity_index.items():
+                       print(f'Keys {keys}, val {values}')
                 label = self.activity_index[result['label']]
                 video_lst.append(videoid)
                 t_start_lst.append(float(result['segment'][0]))

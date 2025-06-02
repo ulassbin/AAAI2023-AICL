@@ -15,11 +15,15 @@ from inference_thumos import inference
 from utils import misc_utils
 from torch.utils.data import Dataset
 from dataset.thumos_features import ThumosFeature
+from dataset.animal_kingdom import AnimalKingdom
 from utils.loss import CrossEntropyLoss, GeneralizedCE, LatentLoss, LatentLossMasked, VidPseudoLoss
 from NCELoss.NNIICLUV_Tests.loss import InfoNCELoss
 from config.config_thumos import Config, parse_args, class_dict
 from models.model import AICL
 
+#class_dict = Config.class_dict #
+print("Len of Class dict: ", len(class_dict))
+#exit()
 from NCELoss.NNIICLUV_Tests.custom_queue import Queue
 
 
@@ -42,9 +46,9 @@ def load_weight(net, config):
         model_dict.update(selected_params)
         net.load_state_dict(model_dict)
 
-
 def get_dataloaders(config):
-    train_loader = data.DataLoader(
+    if(not config.animal):
+        train_loader = data.DataLoader(
         ThumosFeature(data_path=config.data_path, mode='train',
                       modal=config.modal, feature_fps=config.feature_fps,
                       num_segments=config.num_segments, len_feature=config.len_feature,
@@ -52,7 +56,7 @@ def get_dataloaders(config):
         batch_size=config.batch_size,
         shuffle=True, num_workers=config.num_workers)
 
-    test_loader = data.DataLoader(
+        test_loader = data.DataLoader(
         ThumosFeature(data_path=config.data_path, mode='test',
                       modal=config.modal, feature_fps=config.feature_fps,
                       num_segments=config.num_segments, len_feature=config.len_feature,
@@ -60,16 +64,37 @@ def get_dataloaders(config):
         batch_size=1,
         shuffle=False, num_workers=config.num_workers)
 
-    pre_train_loader = data.DataLoader(
+        pre_train_loader = data.DataLoader(
         ThumosFeature(data_path=config.data_path, mode='train',
                       modal=config.modal, feature_fps=config.feature_fps,
                       num_segments=config.num_segments, len_feature=config.len_feature,
                       seed=config.seed, sampling='random', supervision='strong'),
         batch_size=config.pretrain_batch_size,
         shuffle=True, num_workers=config.num_workers)
+    else: # Animals Case!
+        # Change config here!
+        print("Running with Animal Kingdom Dataset!")
+        config.num_classes = 140 # Most critical stuff here!
+        config.gt_path = '/abyss/home/datasets/run_animal_kingdom/animal_kingdom_annotations_temp/gt.json' # Animal
+        config.feature_fps = 1
+        class_dict = {}
+        for i in range(140):
+            class_dict[int(i)] = str(i) # Can this be i-1?
+        config.class_dict = class_dict
+        train_loader = torch.utils.data.DataLoader(
+        AnimalKingdom('/abyss/home/datasets/run_animal_kingdom/animal_kingdom_annotations_temp/', 'train',
+                      config.modal, config.feature_fps, config.num_segments, 'uniformb', class_dict, config.seed, 'weak'),
+        batch_size=config.batch_size, shuffle=False, num_workers=config.num_workers) # worker_init_fn=worker_init_fn
+        test_loader = torch.utils.data.DataLoader(
+        AnimalKingdom('/abyss/home/datasets/run_animal_kingdom/animal_kingdom_annotations_temp/', 'test',
+                      config.modal, config.feature_fps, config.num_segments, 'uniformb', class_dict, config.seed, 'weak'),
+                      batch_size=1, shuffle=False, num_workers=config.num_workers) # also worker init here...
+        pre_train_loader = torch.utils.data.DataLoader(
+        AnimalKingdom('/abyss/home/datasets/run_animal_kingdom/animal_kingdom_annotations_temp/', 'test',
+                      config.modal, config.feature_fps, config.num_segments, 'uniformb', class_dict, config.seed, 'weak'),
+                      batch_size=config.pretrain_batch_size, shuffle=True, num_workers=config.num_workers)
 
-
-    return train_loader, test_loader, pre_train_loader
+    return train_loader, test_loader, pre_train_loader, config
 
 
 def set_seed(config):
@@ -138,13 +163,15 @@ class ThumosTrainer():
         # config
         self.config = config
         
+        # lets get data earlier!
+        self.train_loader, self.test_loader, self.pre_train_loader, self.config = get_dataloaders(self.config)
         # network
         self.net = AICL(config)
         self.net = self.net.cuda()
         self.writter = SummaryWriter(config.log_path)
         self.softmax = nn.Softmax(dim=1)
         # data
-        self.train_loader, self.test_loader, self.pre_train_loader = get_dataloaders(self.config)
+        # self.train_loader, self.test_loader, self.pre_train_loader = get_dataloaders(self.config)
 
         # loss, optimizer
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=self.config.lr, betas=(0.9, 0.999), weight_decay=0.0005)
@@ -200,9 +227,12 @@ class ThumosTrainer():
             label_indices_b = torch.nonzero(label[b, :])[:,0]
             topk_indices_b = topk_indices[b, :, label_indices_b] # topk, num_actions
             cls_agnostic_gt_b = torch.zeros((1, 1, self.config.num_segments)).cuda()
-
+            #print("Self config num segments: ", self.config.num_segments)
             # positive examples
             for gt_i in range(len(label_indices_b)):
+                #print("cls_agnostic_gt_b shape:", cls_agnostic_gt_b.shape)
+                #print("topk_indices_b[:, gt_i] shape:", topk_indices_b[:, gt_i].shape)
+                #print("topk_indices_b[:, gt_i]:", topk_indices_b[:, gt_i])
                 cls_agnostic_gt_b[0, 0, topk_indices_b[:, gt_i]] = 1
             cls_agnostic_gt.append(cls_agnostic_gt_b)
 
@@ -275,7 +305,7 @@ class ThumosTrainer():
         combined_cas = misc_utils.instance_selection_function(torch.softmax(cas.detach(), -1),
                                                               action_flow.permute(0, 2, 1).detach(),
                                                               action_rgb.permute(0, 2, 1))
-
+        #print(f"Combined cas Shape {combined_cas.shape}")
         cas_top, topk_indices = self.get_topk(combined_cas)
         cas_top = torch.mean(torch.gather(cas, 1, topk_indices), dim=1)
         return cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings
@@ -408,10 +438,11 @@ class ThumosTrainer():
                         if(prev_data is not None): # Also pass previous data
                             cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings2(vid_positives_indices, distances, shifts, prev_data)
                         else:
-                          cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings(vid_positives_indices, distances)
+                            cas_top_pseudo, cas_pseudo = self.forward_pass_with_k_embeddings(vid_positives_indices, distances)
 
 
                 # calculate pseudo target
+                print(f"Cas top {cas_top.shape}, CasTOPPESUDO{cas_top_pseudo.shape}")
                 cls_agnostic_gt = self.calculate_pesudo_target(batch_size, _label, topk_indices)
                 
 

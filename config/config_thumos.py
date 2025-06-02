@@ -3,7 +3,7 @@ import argparse
 import shutil
 import os
 
-
+animals = True
 def parse_args():
     description = 'Weakly supervised action localization'
     parser = argparse.ArgumentParser(description=description)
@@ -25,7 +25,7 @@ def parse_args():
 
     # training parameters
     parser.add_argument('--lr', type=float, default=0.0001, help='learning rates for steps(list form)')
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=50)
     parser.add_argument('--num_epochs', type=int, default=5000)
     parser.add_argument('--detection_inf_step', default=50, type=int, help="Run detection inference every n steps")  # 50
     parser.add_argument('--q_val', default=0.7, type=float)
@@ -44,7 +44,8 @@ def parse_args():
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--seed', type=int, default=1, help='random seed (-1 for no manual seed)')  # 42
     parser.add_argument('--verbose', default=False, action='store_true')
-    
+    # Animal kingdom stuff
+    parser.add_argument('--animal', default=animals,  type=bool)
     return init_args(parser.parse_args())
 
 
@@ -60,8 +61,11 @@ def init_args(args):
 
 class Config(object):
     def __init__(self, args):
+        self.animal = args.animal
         self.lr = args.lr
         self.num_classes = 20
+        if(self.animal):
+            self.num_classes = 140
         self.modal = args.modal
         if self.modal == 'all':
             self.len_feature = 2048
@@ -96,7 +100,7 @@ class Config(object):
         self.log_path = os.path.join(os.path.join(args.output_dir, args.exp_name), 'log')
         # Memory Module parameters
         self.print_freq = 20
-        self.queue_size = 10000
+        self.queue_size = 40000
         self.sampling_rate = 0.2
         self.proj_dim = 128
         self.classify_with_projection = False
@@ -107,14 +111,14 @@ class Config(object):
         self.action_consistency_weight = 0.1 # 0.1
         # Memory module weights
         self.nce_weight = 1.0 # 0.1
-        self.fft_k = 5
+        self.fft_k = 10
         self.pseudo_weight = 10.0 # 10.0
         self.sampled_vid_num = 50
         # Latent Representation parameters
         self.latent_loss_weight = 10.0 #10.0
         self.pretrain_encoder_decoder = True
         self.pretrain_batch_size = 100 # 100 originally
-        self.pretrain_num_iters = 1000 # 1000 originally
+        self.pretrain_num_iters = 20 # 1000 originally
         self.latent_loss_pre = 100 # 1000 originially
 
 
@@ -141,3 +145,9 @@ class_dict = {
     17: 'TennisSwing',
     18: 'ThrowDiscus',
     19: 'VolleyballSpiking'}
+
+#animals = True
+if(animals):
+  class_dict = {}
+  for i in range(140):
+      class_dict[int(i)] = str(i) # could be also i-1 
