@@ -4,7 +4,16 @@ import torch.nn.functional as F
 import copy
 import random
 
-     
+
+class KLDivLoss(nn.Module):
+   def __init__(self):
+      super().__init__()
+   def forward(self, mu, logvar):
+      #print(f'mu {mu.shape}, logvar {logvar.shape}')
+      kl = -0.5 * torch.sum(1+logvar - mu.pow(2)-logvar.exp(), dim=1).mean()
+      #print(f'Kl shape {kl.shape}')
+      return kl # .sum(dim=1).mean()
+
 class InfoNCELoss(nn.Module):
     def __init__(self, temperature=0.1):
         super().__init__()

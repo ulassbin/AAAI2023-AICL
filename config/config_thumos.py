@@ -96,27 +96,28 @@ class Config(object):
         self.log_path = os.path.join(os.path.join(args.output_dir, args.exp_name), 'log')
         # Memory Module parameters
         self.print_freq = 20
-        self.queue_size = 10000
+        self.queue_size = 20000
         self.sampling_rate = 0.2
         self.proj_dim = 128
         self.classify_with_projection = False
         # Classification weight
         self.classification_weight = 1.0 # Originally 1.0
         self.modality_weight = 0.1 # 0.1
-        self.contrastive_weight = 0.1 # 0.1
+        self.contrastive_weight = 1.0 # 0.1
         self.action_consistency_weight = 0.1 # 0.1
         # Memory module weights
         self.nce_weight = 1.0 # 0.1
-        self.fft_k = 5
-        self.pseudo_weight = 10.0 # 10.0
+        self.fft_k = 10
+        self.pseudo_weight = 1.0 # 10.0
         self.sampled_vid_num = 50
         # Latent Representation parameters
         self.latent_loss_weight = 10.0 #10.0
         self.pretrain_encoder_decoder = True
         self.pretrain_batch_size = 100 # 100 originally
-        self.pretrain_num_iters = 1000 # 1000 originally
-        self.latent_loss_pre = 100 # 1000 originially
-
+        self.pretrain_num_iters = 1000 # 1000 # 1000 originally
+        self.latent_loss_pre = 1.0 # 1000 originially
+        # kldiv weight
+        self.kldiv_loss = 1.0
 
 
 

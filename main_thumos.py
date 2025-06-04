@@ -16,7 +16,7 @@ from utils import misc_utils
 from torch.utils.data import Dataset
 from dataset.thumos_features import ThumosFeature
 from utils.loss import CrossEntropyLoss, GeneralizedCE, LatentLoss, LatentLossMasked, VidPseudoLoss
-from NCELoss.NNIICLUV_Tests.loss import InfoNCELoss
+from NCELoss.NNIICLUV_Tests.loss import InfoNCELoss, KLDivLoss
 from config.config_thumos import Config, parse_args, class_dict
 from models.model import AICL
 
@@ -152,6 +152,7 @@ class ThumosTrainer():
         self.nce_criterion = InfoNCELoss()
         self.vid_pseudo_loss = LatentLossMasked()
         self.latent_loss = LatentLoss()
+        self.kldiv_loss = KLDivLoss() 
         self.Lgce = GeneralizedCE(q=self.config.q_val)
 
         # Memory module
@@ -270,7 +271,7 @@ class ThumosTrainer():
 
     def forward_pass(self, _data):
         (cas, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, 
-         actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings ) = self.net(_data)
+         actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings, intra_params, inter_params ) = self.net(_data)
 
         combined_cas = misc_utils.instance_selection_function(torch.softmax(cas.detach(), -1),
                                                               action_flow.permute(0, 2, 1).detach(),
@@ -278,7 +279,7 @@ class ThumosTrainer():
 
         cas_top, topk_indices = self.get_topk(combined_cas)
         cas_top = torch.mean(torch.gather(cas, 1, topk_indices), dim=1)
-        return cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings
+        return cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings, intra_params, inter_params
     
     def forward_pass_from_embeddings(self, latent_embeddings):
         cas = self.net.forward_with_embeddings(latent_embeddings)
@@ -295,18 +296,23 @@ class ThumosTrainer():
         cas_top, topk_action_indices = self.get_topk(cas_targets)
         return cas_top, cas_targets
 
-    def calculate_module_losses(self, video_scores, pseudo_video_scores, input_feature, decoded_inter, decoded_intra, sampled_embeddings, positives, negatives):
+    def calculate_module_losses(self, video_scores, pseudo_video_scores, input_feature, decoded_inter, decoded_intra, sampled_embeddings, positives, negatives, intra_params, inter_params):
         loss_pseudo = self.vid_pseudo_loss(video_scores, pseudo_video_scores)
         loss_nce = self.nce_criterion(sampled_embeddings, positives, negatives)
         loss_latent_inter = self.latent_loss(input_feature, decoded_inter)
         loss_latent_intra = self.latent_loss(input_feature, decoded_intra)
-        loss_module = self.config.nce_weight * loss_nce + self.config.pseudo_weight * loss_pseudo + self.config.latent_loss_weight * (loss_latent_inter + loss_latent_intra)
+        batch, time, feats = intra_params[0].shape
+        kldiv_intra = self.kldiv_loss(intra_params[0].reshape(-1, feats), intra_params[1].reshape(-1,feats)) # param0 is mu, param1 is logvar # (B*Txfeats) # framewise representation
+        kldiv_inter = self.kldiv_loss(inter_params[0].reshape(batch, -1), inter_params[1].reshape(batch,-1)) # param 0 is mu, param1 is logvar # (BxT*feats) # video wise representation
+        loss_module = self.config.nce_weight * loss_nce + self.config.pseudo_weight * loss_pseudo + self.config.latent_loss_weight * (loss_latent_inter + loss_latent_intra) + (kldiv_intra + kldiv_inter) / 2.0
         loss_dict = {
             'Loss/Total_Module': loss_module,
             'Loss/NCE': loss_nce,
             'Loss/Pseudo': loss_pseudo,
             'Loss/Latent_Inter': loss_latent_inter,
-            'Loss/Latent_Intra': loss_latent_intra
+            'Loss/Latent_Intra': loss_latent_intra,
+            'Loss/KLDiv_Intra': kldiv_intra,
+            'Loss/KLDiv_Inter': kldiv_inter
         }
         if self.writter:
             for key, value in loss_dict.items():
@@ -346,14 +352,24 @@ class ThumosTrainer():
         data = data.cuda()
         label = label.cuda()
         self.optimizer.zero_grad()
-        cas, _, _, _, _, _, _, _, _, _, all_embeddings = net(data)
+        cas, _, _, _, _, _, _, _, _, _, all_embeddings, intra_params, inter_params = net(data)
         criterion = LatentLoss()
         decoded_inter = all_embeddings['decoded_inter']
         decoded_intra = all_embeddings['decoded_intra']
-        cost = self.config.latent_loss_pre * (criterion(data, decoded_inter) + criterion(data, decoded_intra))/2.0
+        batch, time, feats = intra_params[0].shape
+        #print(f'Sizes for params {intra_params[0].shape}, {intra_params[1].shape}')
+        kldiv_intra = self.kldiv_loss(intra_params[0].reshape(-1, feats), intra_params[1].reshape(-1,feats)) # param0 is mu, param1 is logvar # (B*Txfeats) # framewise representation
+        kldiv_inter = self.kldiv_loss(inter_params[0].reshape(batch, -1), inter_params[1].reshape(batch,-1)) # param 0 is mu, param1 is logvar # (BxT*feats) # video wise representation
+        pre_inter = criterion(data, decoded_inter)
+        pre_intra = criterion(data, decoded_intra)
+        cost = self.config.latent_loss_pre * (pre_intra + pre_inter)/2.0 + self.config.kldiv_loss * (kldiv_intra + kldiv_inter) / 2.0
+        # we might also require another criterion for intra_reconstruction I am not sure if its the best
         cost.backward()
         self.optimizer.step()
-        self.writter.add_scalar('PRE_Latent Loss', cost.cpu().item(), step)
+        self.writter.add_scalar('Pretrain/Latent_intra', pre_intra.cpu().item(), step)
+        self.writter.add_scalar('Pretrain/Latent_inter', pre_inter.cpu().item(), step)
+        self.writter.add_scalar('Pretrain/Kldiv_intra', kldiv_intra.cpu().item(), step)
+        self.writter.add_scalar('Pretrain/Kldiv_inter', kldiv_inter.cpu().item(), step)
         return cost
 
     def pretrain_encoding(self):
@@ -387,19 +403,20 @@ class ThumosTrainer():
 
                 # forward pass
                 (cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f,
-                 actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings) = self.forward_pass(_data)
+                 actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings, intra_params, inter_params) = self.forward_pass(_data)
                 
                 # Sample Intra Embeddings
                 intra_embeddings = all_embeddings['intra_embeddings']
-                embedding_targets = self.sample_embeddings(intra_embeddings)
+                inter_embeddings = all_embeddings['inter_embeddings']
+                intra_embedding_targets = self.sample_embeddings(intra_embeddings)
                 if not self.initialized:
                     self.initialize(embedding_targets, vid_names)
 
-                # Snippet Contrastive Learning
-                positive_indices, positives, positive_labels = self.get_positives(embedding_targets, self.config.num_segments, self.config.proj_dim)
+                # Snippet Contrastive Learning (Intra Embeddings)
+                positive_indices, positives, positive_labels = self.get_positives(intra_embedding_targets, self.config.num_segments, self.config.proj_dim)
                 negatives, negative_indexes = self.queue.getNegatives(positive_indices)
-                # Video contrastive Learning
-                vid_positives, vid_positives_indices, distances, shifts, prev_samples, prev_data = self.get_positives_video_distance(intra_embeddings, vid_names, self.config.num_segments, self.config.proj_dim, self.config.fft_k)
+                # Video contrastive Learning (Inter Embeddings!)
+                vid_positives, vid_positives_indices, distances, shifts, prev_samples, prev_data = self.get_positives_video_distance(inter_embeddings, vid_names, self.config.num_segments, self.config.proj_dim, self.config.fft_k)
                 # Btw prev_samples can be traced to visualize relationships between similar videos
                 with torch.no_grad():
                     if(self.config.fft_k <= 1):
@@ -419,8 +436,8 @@ class ThumosTrainer():
                 cost = self.calculate_all_losses1(contrast_pairs, contrast_pairs_r,contrast_pairs_f, 
                                                   cas_top, _label, action_flow, action_rgb, cls_agnostic_gt, actionness1, actionness2)
                 loss_module = self.calculate_module_losses(self.softmax(cas_top), self.softmax(cas_top_pseudo), _data, 
-                                                           all_embeddings['decoded_inter'], all_embeddings['decoded_intra'],
-                                                                      embedding_targets, positives, negatives)
+                                                           inter_embeddings, intra_embeddings,
+                                                                      intra_embedding_targets, positives, negatives, intra_params, inter_params)
                 cost += loss_module
                 self.writter.add_scalar('Loss/Total', cost.cpu().item(), self.step) # Add all losses
                 cost.backward()
@@ -428,7 +445,7 @@ class ThumosTrainer():
 
                 self.total_loss_per_epoch += cost.cpu().item()
                 self.step += 1
-                self.queue.enqueue(intra_embeddings, vid_names)
+                self.queue.enqueue(inter_embeddings, vid_names) # Inter and intra is different now!
 
                 # evaluation
                 self.evaluate(epoch=epoch)
@@ -448,7 +465,6 @@ def main():
     args = parse_args()
     config = Config(args)
     set_seed(config)
-
     trainer = ThumosTrainer(config)
 
     if args.inference_only:

@@ -145,7 +145,7 @@ class AICL(nn.Module):
         k_C = num_segments // self.r_C
         k_I = num_segments // self.r_I
 
-        intra_embeddings, inter_embeddings, decoded_intra, decoded_inter = self.projection_module(x) # Added a small projection module to the original model
+        intra_embeddings, inter_embeddings, decoded_intra, decoded_inter, intra_params, inter_params = self.projection_module(x) # Added a small projection module to the original model
 
         cas, action_flow, action_rgb, actionness1, actionness2, embedding, embedding_flow, embedding_rgb = self.actionness_module(intra_embeddings, x)
 
@@ -193,7 +193,7 @@ class AICL(nn.Module):
             'inter_embeddings': inter_embeddings,
             'decoded_intra': decoded_intra,
             'decoded_inter': decoded_inter}        
-        return cas, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings
+        return cas, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f, actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings, intra_params, inter_params
     
     def forward_with_embeddings(self, latent_embeddings):
         num_segments = latent_embeddings.shape[1]
