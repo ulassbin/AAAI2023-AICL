@@ -405,18 +405,19 @@ class ThumosTrainer():
                 (cas_top, topk_indices, action_flow, action_rgb, contrast_pairs,contrast_pairs_r,contrast_pairs_f,
                  actionness1, actionness2, aness_bin1, aness_bin2, all_embeddings, intra_params, inter_params) = self.forward_pass(_data)
                 
-                # Sample Intra Embeddings
-                intra_embeddings = all_embeddings['intra_embeddings']
-                inter_embeddings = all_embeddings['inter_embeddings']
-                intra_embedding_targets = self.sample_embeddings(intra_embeddings)
+                # Sample Embeddings
+                intra_embeddings = all_embeddings['intra_embeddings'] # Single-Video
+                inter_embeddings = all_embeddings['inter_embeddings'] # Cross-Video
+                combined_embeddings = (intra_embeddings + inter_embeddings) / 2.0
+                intra_embedding_targets = self.sample_embeddings(combined_embeddings) # Nur intra?
                 if not self.initialized:
-                    self.initialize(embedding_targets, vid_names)
+                    self.initialize(combined_embeddings, vid_names)
 
                 # Snippet Contrastive Learning (Intra Embeddings)
                 positive_indices, positives, positive_labels = self.get_positives(intra_embedding_targets, self.config.num_segments, self.config.proj_dim)
                 negatives, negative_indexes = self.queue.getNegatives(positive_indices)
                 # Video contrastive Learning (Inter Embeddings!)
-                vid_positives, vid_positives_indices, distances, shifts, prev_samples, prev_data = self.get_positives_video_distance(inter_embeddings, vid_names, self.config.num_segments, self.config.proj_dim, self.config.fft_k)
+                vid_positives, vid_positives_indices, distances, shifts, prev_samples, prev_data = self.get_positives_video_distance(combined_embeddings, vid_names, self.config.num_segments, self.config.proj_dim, self.config.fft_k)
                 # Btw prev_samples can be traced to visualize relationships between similar videos
                 with torch.no_grad():
                     if(self.config.fft_k <= 1):
@@ -436,7 +437,7 @@ class ThumosTrainer():
                 cost = self.calculate_all_losses1(contrast_pairs, contrast_pairs_r,contrast_pairs_f, 
                                                   cas_top, _label, action_flow, action_rgb, cls_agnostic_gt, actionness1, actionness2)
                 loss_module = self.calculate_module_losses(self.softmax(cas_top), self.softmax(cas_top_pseudo), _data, 
-                                                           inter_embeddings, intra_embeddings,
+                                                           all_embeddings['decoded_inter'], all_embeddings['decoded_intra'],
                                                                       intra_embedding_targets, positives, negatives, intra_params, inter_params)
                 cost += loss_module
                 self.writter.add_scalar('Loss/Total', cost.cpu().item(), self.step) # Add all losses
@@ -445,7 +446,7 @@ class ThumosTrainer():
 
                 self.total_loss_per_epoch += cost.cpu().item()
                 self.step += 1
-                self.queue.enqueue(inter_embeddings, vid_names) # Inter and intra is different now!
+                self.queue.enqueue(combined_embeddings, vid_names) # Inter and intra is different now!
 
                 # evaluation
                 self.evaluate(epoch=epoch)
