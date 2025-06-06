@@ -304,7 +304,7 @@ class ThumosTrainer():
         batch, time, feats = intra_params[0].shape
         kldiv_intra = self.kldiv_loss(intra_params[0].reshape(-1, feats), intra_params[1].reshape(-1,feats)) # param0 is mu, param1 is logvar # (B*Txfeats) # framewise representation
         kldiv_inter = self.kldiv_loss(inter_params[0].reshape(batch, -1), inter_params[1].reshape(batch,-1)) # param 0 is mu, param1 is logvar # (BxT*feats) # video wise representation
-        loss_module = self.config.nce_weight * loss_nce + self.config.pseudo_weight * loss_pseudo + self.config.latent_loss_weight * (loss_latent_inter + loss_latent_intra) + (kldiv_intra + kldiv_inter) / 2.0
+        loss_module = self.config.nce_weight * loss_nce + self.config.pseudo_weight * loss_pseudo + self.config.latent_loss_weight * (loss_latent_inter + loss_latent_intra) + self.config.kldiv_loss * (kldiv_intra + kldiv_inter) / 2.0
         loss_dict = {
             'Loss/Total_Module': loss_module,
             'Loss/NCE': loss_nce,
@@ -335,7 +335,7 @@ class ThumosTrainer():
         # In this function we will get the positives by using fft based distance calculation
         batch_size, temporal, embedding_dim = full_embeddings.shape
         polled_vids = batch_size
-        distances, vid_indices, shifts, prev_samples = self.queue.find_nearest_vids(full_embeddings, vid_names, self.config.sampled_vid_num)# Implement this
+        distances, vid_indices, shifts, prev_samples = self.queue.find_nearest_vids(full_embeddings, vid_names, self.config.sampled_vid_num, 5, 0.5, self.config.skip_prev) # Implement this
         #print('Vid indices shape: ', vid_indices.shape)
         #print('Distances shape: ', distances.shape)
         vid_embeddings = self.queue.getVidDataBatched(vid_indices)

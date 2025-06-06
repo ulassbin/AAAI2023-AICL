@@ -162,11 +162,13 @@ class Queue():
         #print('Final tensor shape: ', final_tensor.shape)
         return final_tensor  # Now all_vid_data should be of shape (batch, top_k, max_length, feature_dim)
 
-    def getFromPreviousDistances(self, vid_names, top_k=5):
+    def getFromPreviousDistances(self, vid_names, top_k=5, skip_prev=True):
         # This function is used to get the nearest videos from the previous distances
         # append to queued_vid_targets
         #print('Len vid names: ', len(vid_names))
         indices = {f'{item}':[] for item in vid_names}
+        if skip_prev:
+           return indices
         if len(self.distances) == 0 or len(vid_names) == 0:
             print(f'Cant get prev distances REASON: Self dist {len(self.distances)}, vid_names: {len(vid_names)}')
             return indices
@@ -205,14 +207,14 @@ class Queue():
        # Now data is a list of lists, where each inner list contains [vid_data, distance]
        return data
 
-    def find_nearest_vids(self, full_embeddings, vid_names, max_samples=20, max_k=5, random_ratio=0.5):
+    def find_nearest_vids(self, full_embeddings, vid_names, max_samples=20, max_k=5, random_ratio=0.5, skip_prev=True):
         # We have vids stored in a list called vid_queue
         num_vids = len(self.vid_queue) # How many unique videos we have
         if(num_vids == 0):
             print('Vid queue is currently empty')
             return None, None, None
         
-        prev_distance_samples = self.getFromPreviousDistances(vid_names)
+        prev_distance_samples = self.getFromPreviousDistances(vid_names, skip_prev)
         vid_indices = self.getVidIndices(max_samples).to('cuda')
         target_names = [self.vid_names[i] for i in vid_indices.cpu().numpy()]
         # Else just use random indices    

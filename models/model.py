@@ -147,7 +147,8 @@ class AICL(nn.Module):
 
         intra_embeddings, inter_embeddings, decoded_intra, decoded_inter, intra_params, inter_params = self.projection_module(x) # Added a small projection module to the original model
 
-        cas, action_flow, action_rgb, actionness1, actionness2, embedding, embedding_flow, embedding_rgb = self.actionness_module(intra_embeddings, x)
+        combined_embeddings = (intra_embeddings + inter_embeddings) / 2.0
+        cas, action_flow, action_rgb, actionness1, actionness2, embedding, embedding_flow, embedding_rgb = self.actionness_module(combined_embeddings, x)
 
         aness_np1 = actionness1.cpu().detach().numpy()
         aness_median1 = np.median(aness_np1, 1, keepdims=True)
